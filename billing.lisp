@@ -178,6 +178,32 @@ instead of each branch independently deciding how to report a problem."
       (:log
        (err message)))))
 
+(defun webhook-json-response (alist)
+  "Encode ALIST (e.g. '((\"status\" . \"success\"))) as a JSON response body
+using CL-JSON, so error messages and other free-form strings are properly
+escaped rather than hand-spliced into a format-nil JSON literal (which
+would produce malformed JSON, or worse, invalid escaping, if the message
+happened to contain a double quote or backslash)."
+  (cl-json:encode-json-to-string alist))
+
+(defun webhook-invalid-signature-response ()
+  "Pure: the JSON body returned when Stripe webhook signature verification
+fails."
+  (webhook-json-response '(("error" . "invalid signature"))))
+
+(defun webhook-outcome-response (failures)
+  "Pure: given the list of non-OK outcomes returned by executing this
+webhook's commands, return the JSON body describing overall success or
+partial failure."
+  (webhook-json-response (list (cons "status" (if failures "partial-failure" "success")))))
+
+(defun webhook-error-response (condition)
+  "Pure: the JSON body returned when an unhandled Lisp error escapes webhook
+processing. CONDITION's report is coerced to a string and JSON-encoded
+(rather than spliced into a literal), so it can never produce malformed
+or improperly-escaped JSON."
+  (webhook-json-response (list (cons "error" (princ-to-string condition)))))
+
 (hunchentoot:define-easy-handler (stripe-webhook-handler :uri "/stripe-webhook") ()
   (case (hunchentoot:request-method*)
     (:post
@@ -188,7 +214,7 @@ instead of each branch independently deciding how to report a problem."
                (progn
                  (format t ";; Warning: Rejected Stripe webhook with invalid signature.~%")
                  (setf (hunchentoot:return-code*) 400)
-                 "{\"error\": \"invalid signature\"}")
+                 (webhook-invalid-signature-response))
                (let* ((json (cl-json:decode-json-from-string raw-body))
                       (type (cdr (assoc :type json)))
                       (commands (webhook-event->db-commands json))
@@ -202,12 +228,10 @@ instead of each branch independently deciding how to report a problem."
                  (format t ";; Stripe Webhook Received: type=~A~%" type)
                  (dolist (failure failures)
                    (format t ";; Warning: ~A~%" (outcome-reason failure)))
-                 (if failures
-                     "{\"status\": \"partial-failure\"}"
-                     "{\"status\": \"success\"}"))))
+                 (webhook-outcome-response failures))))
        (error (e)
          (setf (hunchentoot:return-code*) 500)
-         (format nil "{\"error\": \"~A\"}" e))))
+         (webhook-error-response e))))
     (t
      (setf (hunchentoot:return-code*) 405)
      "Method Not Allowed")))

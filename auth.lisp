@@ -91,48 +91,51 @@ JRM-AUTH::NORMALIZE-USERNAME)."
 (defun get-signup-username ()
   (hunchentoot:session-value :signup-username))
 
+(defmacro with-authenticated-user ((user-var) &body body)
+  "Bind USER-VAR to the current session's :AUTHENTICATED-USER and execute
+BODY only if a user is actually logged in; otherwise redirect to \"/\"
+without running BODY. Replaces six separate, near-identical copies of
+the (let ((user (hunchentoot:session-value :authenticated-user))) (if
+user ... (hunchentoot:redirect \"/\"))) shape previously duplicated
+verbatim across PASTEBIN-PAGE, DASHBOARD-PAGE, REGENERATE-RECOVERY-PAGE,
+REGENERATE-2FA-PAGE, CHANGE-PASSWORD-PAGE, and DELETE-ACCOUNT-ACTION --
+see TECHNICAL_DEBT.md item 8, and ADMIN.LISP's analogous
+WITH-ADMIN-MEMBERS-ACTION combinator for the sibling admin-side pattern."
+  `(let ((,user-var (hunchentoot:session-value :authenticated-user)))
+     (if ,user-var
+         (progn ,@body)
+         (hunchentoot:redirect "/"))))
+
+(defun signup-post-outcome (username password)
+  "Pure decision logic for the POST /signup handler: given the submitted
+USERNAME/PASSWORD, decide which of :missing-fields, :invalid-username,
+:username-taken, or (:created NORMALIZED-USERNAME) applies. Does not
+itself touch the session or render HTML -- SIGNUP-PAGE dispatches on the
+returned keyword to decide what side effects/response to produce, which
+keeps the branching logic here directly unit-testable (by stubbing
+JRM-AUTH:CREATE-USER) without any Hunchentoot request/session context."
+  (cond
+    ((not (and username password)) :missing-fields)
+    ((not (valid-username-p username)) :invalid-username)
+    ((jrm-auth:create-user username password) (list :created (jrm-auth:normalize-username username)))
+    (t :username-taken)))
+
 (hunchentoot:define-easy-handler (signup-page :uri "/signup") (username password)
   (hunchentoot:start-session)
   (case (hunchentoot:request-method*)
     (:get
      (setf (hunchentoot:session-value :recovery-viewed) nil)
-     (format nil "<html>
-                    <head><style>body { font-family: sans-serif; background: #111; color: #eee; padding: 2rem; } input { padding: 0.5rem; margin-bottom: 1rem; }</style></head>
-                    <body><h2>Secure Signup</h2>
-                      <form method='POST'>
-                        ~A
-                        <label>Username (any unique string):</label><br>
-                        <input type='text' name='username' value='~A' required><br>
-                        <label>Password:</label><br>
-                        <input type='password' name='password' required><br>
-                        <input type='submit' value='Sign Up'>
-                      </form>
-                    </body>
-                  </html>"
-             (csrf-input-html) (or username "")))
+     (render-signup-form-page :prefill-username (or username "")))
     (:post
      (with-csrf-protection
-         (if (and username password)
-             (if (valid-username-p username)
-                 (if (jrm-auth:create-user username password)
-                     (progn
-                       (setf (hunchentoot:session-value :signup-username) (jrm-auth:normalize-username username))
-                       (hunchentoot:redirect "/setup-2fa"))
-                     (format nil "<html>
-                                <head><style>body { font-family: sans-serif; background: #111; color: #eee; padding: 2rem; }</style></head>
-                                <body><h2>Signup Failed</h2>
-                                  <p style='color: #bf616a;'>An account with that username already exists.</p>
-                                  <a href='/' style='color: #88c0d0;'>Return to Login</a>
-                                </body>
-                              </html>"))
-                 (format nil "<html>
-                            <head><style>body { font-family: sans-serif; background: #111; color: #eee; padding: 2rem; }</style></head>
-                            <body><h2>Signup Failed</h2>
-                              <p style='color: #bf616a;'>Invalid username formatting.</p>
-                              <a href='/signup' style='color: #88c0d0;'>Try Again</a>
-                            </body>
-                          </html>"))
-             (format nil "<html><body><h2>Error</h2><p>Username and password are required.</p></body></html>"))))))
+         (let ((outcome (signup-post-outcome username password)))
+           (cond
+             ((eq outcome :missing-fields) (render-signup-missing-fields-page))
+             ((eq outcome :invalid-username) (render-invalid-username-page))
+             ((eq outcome :username-taken) (render-username-taken-page))
+             (t
+              (setf (hunchentoot:session-value :signup-username) (second outcome))
+              (hunchentoot:redirect "/setup-2fa"))))))))
 
 (hunchentoot:define-easy-handler (setup-2fa-page :uri "/setup-2fa") (totp-code)
   (let ((username (get-signup-username)))
@@ -143,19 +146,7 @@ JRM-AUTH::NORMALIZE-USERNAME)."
               (uri (totp:generate-qr-uri secret username :issuer "JRM-Code")))
          (setf (hunchentoot:session-value :temp-secret) secret)
          (let ((qr-url (format nil "https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=~A" (hunchentoot:url-encode uri))))
-           (format nil "<html>
-                          <head><style>body { font-family: sans-serif; background: #111; color: #eee; padding: 2rem; }</style></head>
-                          <body><h2>Setup 2FA</h2>
-                            <p>Scan this QR code with Google Authenticator or Authy:</p>
-                            <img src='~A' style='border: 10px solid white;'><br><br>
-                            <p>Or manually enter this secret: <b style='color: #0f0; font-family: monospace;'>~A</b></p>
-                            <form method='POST'>
-                              ~A
-                              Enter 6-digit code: <input type='text' name='totp-code' required><br>
-                              <input type='submit' value='Verify & Lock'>
-                            </form>
-                          </body>
-                        </html>" qr-url (string-upcase secret) (csrf-input-html)))))
+           (render-setup-2fa-page qr-url secret (csrf-input-html)))))
       (:post
        (with-csrf-protection
            (let ((secret (hunchentoot:session-value :temp-secret)))
@@ -163,7 +154,7 @@ JRM-AUTH::NORMALIZE-USERNAME)."
                  (progn
                    (jrm-auth:activate-user-2fa username secret)
                    (hunchentoot:redirect "/recovery-codes"))
-                 (format nil "<html><head><style>body { background: #111; color: #f00; }</style></head><body><h2>Error</h2><p>Invalid code. <a href='/setup-2fa' style='color:#fff;'>Try again</a>.</p></body></html>"))))))))
+                 (render-2fa-invalid-code-page "/setup-2fa"))))))))
 
 (hunchentoot:define-easy-handler (recovery-codes-page :uri "/recovery-codes") ()
   (let ((username (get-signup-username)))
@@ -172,15 +163,7 @@ JRM-AUTH::NORMALIZE-USERNAME)."
                      (let ((new-codes (jrm-auth:generate-recovery-codes username)))
                        (setf (hunchentoot:session-value :temp-recovery-codes) new-codes)
                        new-codes))))
-      (format nil "<html>
-                     <head><style>body { font-family: sans-serif; background: #111; color: #eee; padding: 2rem; } li { font-family: monospace; font-size: 1.2rem; color: #0f0; }</style></head>
-                     <body><h2>Your Recovery Codes</h2>
-                       <p>Print these or save them offline. If you lose your phone, these are your only way back in.</p>
-                       <p><b>You will only see this screen once.</b></p>
-                       <ul>~{<li>~A</li>~}</ul>
-                       <br><a href='/' style='color: #fff;'>Proceed to Login</a>
-                     </body>
-                   </html>" codes))))
+      (render-recovery-codes-page codes))))
 ;; --- LOGIN PROTOCOL ---
 
 (hunchentoot:define-easy-handler (api-login :uri "/api/login") (username password next)
@@ -202,17 +185,7 @@ JRM-AUTH::NORMALIZE-USERNAME)."
     (unless username (hunchentoot:redirect "/"))
     (case (hunchentoot:request-method*)
       (:get
-       (format nil "<html>
-                      <head><style>body { font-family: sans-serif; background: #111; color: #eee; padding: 2rem; } input { padding: 0.5rem; margin-bottom: 1rem; }</style></head>
-                      <body><h2>Two-Factor Authentication</h2>
-                        <p>Enter the 6-digit code from your authenticator app, or enter an 8-character recovery code (e.g., ABCD-1234).</p>
-                        <form method='POST'>
-                          ~A
-                          <input type='text' name='totp-code' required autocomplete='off' autofocus><br>
-                          <input type='submit' value='Authenticate'>
-                        </form>
-                      </body>
-                    </html>" (csrf-input-html)))
+       (render-challenge-2fa-page (csrf-input-html)))
       (:post
        (with-csrf-protection
            (let* ((user (car (jrm-auth:get-user username)))
@@ -226,7 +199,7 @@ JRM-AUTH::NORMALIZE-USERNAME)."
                    (let ((redirect-to (or (hunchentoot:session-value :post-login-redirect) "/dashboard")))
                      (setf (hunchentoot:session-value :post-login-redirect) nil)
                      (hunchentoot:redirect redirect-to)))
-                 (format nil "<html><head><style>body { background: #111; color: #f00; }</style></head><body><h2>Error</h2><p>Invalid code. <a href='/challenge-2fa' style='color:#fff;'>Try again</a>.</p></body></html>"))))))))
+                 (render-2fa-invalid-code-page "/challenge-2fa"))))))))
 
 ;; --- DASHBOARD HTML RENDERING (translates pure view-model data to markup
 ;; using the pure combinators in views.lisp; see FUNCTIONAL_REFACTOR.md
@@ -425,85 +398,57 @@ visitors are bounced to / (this codebase has no separate /login route --
 session-gated handler in this file. On success, mints a fresh 1-hour
 programmatic-API JWT (scoped to the user's current tier) and renders
 the pastebin panel with it embedded for PASTEBIN.JS to use."
-  (let ((user (hunchentoot:session-value :authenticated-user)))
-    (if user
-        (render-pastebin-page
-         (jrm-auth:generate-api-jwt
-          user (api-jwt-tier-string (or (jrm-auth:get-user-tier user) :free))))
-        (hunchentoot:redirect "/"))))
+  (with-authenticated-user (user)
+    (render-pastebin-page
+     (jrm-auth:generate-api-jwt
+      user (api-jwt-tier-string (or (jrm-auth:get-user-tier user) :free))))))
 
 (hunchentoot:define-easy-handler (dashboard-page :uri "/dashboard") (checkout-status next)
-  (let ((user (hunchentoot:session-value :authenticated-user)))
-    (if user
-        (let* ((user-data (car (jrm-auth:get-user user)))
-               (vm (dashboard-view-model user-data checkout-status next)))
-          ;; Refresh the membership JWT on every dashboard visit so tier
-          ;; changes (upgrades/downgrades) propagate promptly, while still
-          ;; letting the cookie persist independently of session/DB state.
-          (issue-membership-jwt user (dashboard-view-model-tier vm) (dashboard-view-model-wheel-p vm))
-          ;; If we just came back from a successful upgrade purchase and a
-          ;; `next` breadcrumb is present (set when the user was bounced
-          ;; here from an upgrade-required page), send them straight back
-          ;; to the originally-requested JWT-protected page now that their
-          ;; freshly-issued JWT reflects the new tier -- instead of showing
-          ;; the dashboard.
-          (when (dashboard-view-model-redirect-to vm)
-            (hunchentoot:redirect (dashboard-view-model-redirect-to vm)))
-          (render-dashboard vm
-                             :wheel-link-html (if (dashboard-view-model-wheel-p vm)
-                                                   "<a href='/admin/members' class='btn' style='background: #d08770;'>Manage Members</a>"
-                                                   "")
-                             ;; A short-lived programmatic-API JWT (distinct
-                             ;; from the long-lived membership cookie JWT
-                             ;; above), embedded into the page so the
-                             ;; dashboard's pastebin panel (see
-                             ;; pastebin.js) can call the Bearer-secured
-                             ;; /api/v1/pastes endpoints without the user
-                             ;; ever re-entering their API key.
-                             :api-jwt (jrm-auth:generate-api-jwt
-                                       user (api-jwt-tier-string (or (jrm-auth:get-user-tier user) :free)))
-                             :csrf-token (csrf-input-html)))
-        (hunchentoot:redirect "/"))))
+  (with-authenticated-user (user)
+    (let* ((user-data (car (jrm-auth:get-user user)))
+           (vm (dashboard-view-model user-data checkout-status next)))
+      ;; Refresh the membership JWT on every dashboard visit so tier
+      ;; changes (upgrades/downgrades) propagate promptly, while still
+      ;; letting the cookie persist independently of session/DB state.
+      (issue-membership-jwt user (dashboard-view-model-tier vm) (dashboard-view-model-wheel-p vm))
+      ;; If we just came back from a successful upgrade purchase and a
+      ;; `next` breadcrumb is present (set when the user was bounced
+      ;; here from an upgrade-required page), send them straight back
+      ;; to the originally-requested JWT-protected page now that their
+      ;; freshly-issued JWT reflects the new tier -- instead of showing
+      ;; the dashboard.
+      (when (dashboard-view-model-redirect-to vm)
+        (hunchentoot:redirect (dashboard-view-model-redirect-to vm)))
+      (render-dashboard vm
+                         :wheel-link-html (if (dashboard-view-model-wheel-p vm)
+                                               "<a href='/admin/members' class='btn' style='background: #d08770;'>Manage Members</a>"
+                                               "")
+                         ;; A short-lived programmatic-API JWT (distinct
+                         ;; from the long-lived membership cookie JWT
+                         ;; above), embedded into the page so the
+                         ;; dashboard's pastebin panel (see
+                         ;; pastebin.js) can call the Bearer-secured
+                         ;; /api/v1/pastes endpoints without the user
+                         ;; ever re-entering their API key.
+                         :api-jwt (jrm-auth:generate-api-jwt
+                                   user (api-jwt-tier-string (or (jrm-auth:get-user-tier user) :free)))
+                         :csrf-token (csrf-input-html)))))
 
 (hunchentoot:define-easy-handler (regenerate-recovery-page :uri "/regenerate-recovery") ()
-  (let ((user (hunchentoot:session-value :authenticated-user)))
-    (if user
-        (progn
-          (jrm-auth:delete-recovery-codes user)
-          (let ((codes (jrm-auth:generate-recovery-codes user)))
-            (format nil "<html>
-                           <head><style>body { font-family: sans-serif; background: #111; color: #eee; padding: 2rem; } li { font-family: monospace; font-size: 1.2rem; color: #0f0; }</style></head>
-                           <body><h2>New Recovery Codes</h2>
-                             <p>Save these offline. Your old recovery codes have been invalidated and replaced.</p>
-                             <p><b>You will only see this screen once.</b></p>
-                             <ul>~{<li>~A</li>~}</ul>
-                             <br><a href='/dashboard' style='color: #fff; font-weight: bold;'>Return to Dashboard</a>
-                           </body>
-                         </html>" codes)))
-        (hunchentoot:redirect "/"))))
+  (with-authenticated-user (user)
+    (jrm-auth:delete-recovery-codes user)
+    (let ((codes (jrm-auth:generate-recovery-codes user)))
+      (render-regenerate-recovery-page codes))))
 
 (hunchentoot:define-easy-handler (regenerate-2fa-page :uri "/regenerate-2fa") (totp-code)
-  (let ((user (hunchentoot:session-value :authenticated-user)))
-    (unless user (hunchentoot:redirect "/"))
+  (with-authenticated-user (user)
     (case (hunchentoot:request-method*)
       (:get
        (let* ((secret (totp:generate-secret))
               (uri (totp:generate-qr-uri secret user :issuer "JRM-Code")))
          (setf (hunchentoot:session-value :temp-regen-secret) secret)
          (let ((qr-url (format nil "https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=~A" (hunchentoot:url-encode uri))))
-           (format nil "<html>
-                          <head><style>body { font-family: sans-serif; background: #111; color: #eee; padding: 2rem; }</style></head>
-                          <body><h2>Regenerate 2FA Setup</h2>
-                            <p>Scan this QR code with Google Authenticator or Authy to configure your new 2FA key:</p>
-                            <img src='~A' style='border: 10px solid white;'><br><br>
-                            <p>Or manually enter this secret: <b style='color: #0f0; font-family: monospace;'>~A</b></p>
-                            <form method='POST'>
-                              ~A
-                              Enter 6-digit code: <input type='text' name='totp-code' required><br>
-                              <input type='submit' value='Verify & Save'>
-                            </form>
-                          </body>
-                        </html>" qr-url (string-upcase secret) (csrf-input-html)))))
+           (render-regenerate-2fa-page qr-url secret (csrf-input-html)))))
       (:post
        (with-csrf-protection
            (let ((secret (hunchentoot:session-value :temp-regen-secret)))
@@ -512,43 +457,12 @@ the pastebin panel with it embedded for PASTEBIN.JS to use."
                    (jrm-auth:activate-user-2fa user secret)
                    (setf (hunchentoot:session-value :temp-regen-secret) nil)
                    (hunchentoot:redirect "/dashboard"))
-                 (format nil "<html><head><style>body { background: #111; color: #f00; }</style></head><body><h2>Error</h2><p>Invalid code. <a href='/regenerate-2fa' style='color:#fff;'>Try again</a>.</p></body></html>"))))))))
+                 (render-2fa-invalid-code-page "/regenerate-2fa"))))))))
 
 (hunchentoot:define-easy-handler (change-password-page :uri "/change-password") (current-password new-password confirm-password)
-  (let ((user (hunchentoot:session-value :authenticated-user)))
-    (unless user (hunchentoot:redirect "/"))
+  (with-authenticated-user (user)
     (flet ((render (&optional message message-class)
-             (format nil "<html>
-                            <head><style>
-                              body { font-family: sans-serif; background: #111; color: #eee; padding: 2rem; }
-                              form { max-width: 320px; }
-                              label { display: block; margin-bottom: 0.25rem; }
-                              input { width: 100%; box-sizing: border-box; padding: 0.5rem; margin-bottom: 1rem; border-radius: 4px; border: 1px solid #333; background: #1e1e1e; color: #eee; }
-                              input[type=submit] { width: auto; background: #88c0d0; color: #111; font-weight: bold; border: none; cursor: pointer; }
-                              .notification { padding: 1rem; border-radius: 4px; margin-bottom: 1.5rem; border: 1px solid; }
-                              .notification-error { background: rgba(191, 97, 106, 0.2); border-color: #bf616a; color: #bf616a; }
-                              .notification-success { background: rgba(163, 190, 140, 0.2); border-color: #a3be8c; color: #a3be8c; }
-                            </style></head>
-                            <body>
-                              <h2>Change Password</h2>
-                              ~A
-                              <form method='POST'>
-                                ~A
-                                <label for='current-password'>Current Password</label>
-                                <input type='password' name='current-password' id='current-password' required>
-                                <label for='new-password'>New Password</label>
-                                <input type='password' name='new-password' id='new-password' required minlength='8'>
-                                <label for='confirm-password'>Confirm New Password</label>
-                                <input type='password' name='confirm-password' id='confirm-password' required minlength='8'>
-                                <input type='submit' value='Update Password'>
-                              </form>
-                              <p><a href='/dashboard' style='color: #fff;'>&larr; Return to Dashboard</a></p>
-                            </body>
-                          </html>"
-                     (if message
-                         (format nil "<div class='notification notification-~A'>~A</div>" message-class (hunchentoot:escape-for-html message))
-                         "")
-                     (csrf-input-html))))
+             (render-change-password-page (csrf-input-html) message message-class)))
       (case (hunchentoot:request-method*)
         (:get (render))
         (:post
@@ -575,23 +489,22 @@ the pastebin panel with it embedded for PASTEBIN.JS to use."
   (hunchentoot:redirect "/"))
 
 (hunchentoot:define-easy-handler (delete-account-action :uri "/delete-account") ()
-  (let ((user (hunchentoot:session-value :authenticated-user)))
-    (if user
-        (case (hunchentoot:request-method*)
-          (:post
-           (with-csrf-protection
-               ;; If they have an active paid subscription, cancel it and refund
-               ;; the pro-rated unused portion before removing their account.
-               (let* ((user-data (car (jrm-auth:get-user user)))
-                      (subscription-id (jrm-auth:user-stripe-subscription-id user-data)))
-                 (when subscription-id
-                   (cancel-stripe-subscription-with-prorated-refund subscription-id)))
-             ;; Nuke the user from the database
-             (jrm-auth:delete-user user)
-             ;; Obliterate the session
-             (setf (hunchentoot:session-value :authenticated-user) nil)
-             (hunchentoot:remove-session hunchentoot:*session*)
-             ;; Kick them out to the cold
-             (hunchentoot:redirect "/")))
-          (t (hunchentoot:redirect "/dashboard")))
-        (hunchentoot:redirect "/"))))
+  (with-authenticated-user (user)
+    (case (hunchentoot:request-method*)
+      (:post
+       (with-csrf-protection
+           ;; If they have an active paid subscription, cancel it and refund
+           ;; the pro-rated unused portion before removing their account.
+           (let* ((user-data (car (jrm-auth:get-user user)))
+                  (subscription-id (jrm-auth:user-stripe-subscription-id user-data)))
+             (when subscription-id
+               (cancel-stripe-subscription-with-prorated-refund subscription-id)))
+         ;; Nuke the user from the database
+         (jrm-auth:delete-user user)
+         ;; Obliterate the session
+         (setf (hunchentoot:session-value :authenticated-user) nil)
+         (hunchentoot:remove-session hunchentoot:*session*)
+         ;; Kick them out to the cold
+         (hunchentoot:redirect "/")))
+      (t (hunchentoot:redirect "/dashboard")))))
+

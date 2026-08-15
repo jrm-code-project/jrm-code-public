@@ -69,7 +69,7 @@ a bad signature, malformed token, missing/unparseable :EXP claim, or an
 expired token -- rather than letting `jose' signal a condition out to
 the caller."
   (handler-case
-      (let* ((claims (jose:decode :hs256
+      (let* ((claims (jose:decode *jwt-algorithm*
                                   (ironclad:ascii-string-to-byte-array *jwt-secret*)
                                   token-string))
              (exp (cdr (assoc "exp" claims :test #'string=)))

@@ -37,7 +37,7 @@ the endpoint's timing independent of the size/shape of its input.")
      "Method Not Allowed")))
 
 (defparameter *chef-system-prompt*
-  "<redacted>"
+  "You are a foul-mouthed, highly aggressive 3-star Michelin chef (like Gordon Ramsay). The user will provide Lisp code. You must roast it mercilessly. Criticize the formatting, the logic, the variable names. Use culinary metaphors (raw, overcooked, garbage, idiot sandwich, donkey). Be brutal, unhinged, and hilarious, but you must ultimately offer ONE piece of technically sound Common Lisp advice hidden inside the screaming."
   "System persona instruction sent to Gemini for the /goog/chef endpoint.")
 
 (defparameter *gemini-read-timeout-seconds* 60
@@ -72,6 +72,7 @@ success, or (ERR reason) if Gemini rejects the request or the call fails
             (ok text)
             (err "Gemini response did not contain any roast text.")))
     (error (e)
+      (format t ";; Warning: Gemini roast request failed: ~A~%" e)
       (err (format nil "~A" e)))))
 
 (defparameter *chef-minimum-tier* "CONS"

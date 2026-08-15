@@ -37,6 +37,31 @@ Phase 4."
 value) by INIT-STRIPE-PRODUCT on server startup, and read via the small
 accessor functions TIER-PRICE-ID/TIER-FROM-PRICE-ID that close over it.")
 
+(defvar *stripe-catalog-lock* (sb-thread:make-mutex :name "stripe-catalog")
+  "Guards every write (replacement) of *STRIPE-CATALOG*, the same pattern
+already used for *ACCEPTOR* (see SERVER.LISP's *ACCEPTOR-LOCK*) and
+*TARPIT-STRIKES*/*RATE-LIMITS* (TARPIT.LISP/RATE-LIMIT.LISP). Concurrency
+contract: *STRIPE-CATALOG* itself holds an immutable STRIPE-CATALOG
+struct that is only ever installed via one atomic SETF (never mutated in
+place), so ordinary reads from request-handling threads (TIER-PRICE-ID,
+TIER-FROM-PRICE-ID, etc.) need no lock -- a reader always sees either the
+old or the new complete snapshot, never a half-updated one. The lock
+exists solely to serialize *writers*: if INIT-STRIPE-PRODUCT were ever
+called concurrently (e.g. a future \"reload catalog\" admin action racing
+server startup, or two overlapping startup attempts), without a lock both
+callers could read the same starting catalog, each derive their own
+updated version via the ENSURE-TIER-PRODUCT/ENSURE-BILLING-PORTAL-
+CONFIGURATION chain, and the last SETF to run would silently clobber the
+other's Stripe product/price-ID bookkeeping. See SET-STRIPE-CATALOG!,
+which is the only sanctioned way to replace *STRIPE-CATALOG*.")
+
+(defun set-stripe-catalog! (new-catalog)
+  "The sole sanctioned way to replace *STRIPE-CATALOG*: serializes writers
+via *STRIPE-CATALOG-LOCK* (see its docstring for the concurrency
+contract) before installing NEW-CATALOG. Returns NEW-CATALOG."
+  (sb-thread:with-mutex (*stripe-catalog-lock*)
+    (setf *stripe-catalog* new-catalog)))
+
 (defun catalog-with-tier (catalog tier price-id product-id)
   "Return a new STRIPE-CATALOG, derived from CATALOG, with TIER's PRICE-ID and
 PRODUCT-ID recorded (added to all three of the tier/price/product alists in
@@ -209,13 +234,13 @@ the catalog can never be observed half-updated partway through this dance."
   (let ((secret-key (get-stripe-secret-key)))
     (if (or (null secret-key) (string= secret-key ""))
         (format t ";; Warning: STRIPE_SECRET_KEY is not set. Skipping Stripe product initialization.~%")
-        (setf *stripe-catalog*
-              (ensure-billing-portal-configuration
-               (fold:fold-left (lambda (catalog plan)
-                                  (destructuring-bind (tier product-name unit-amount) plan
-                                    (ensure-tier-product catalog tier product-name unit-amount)))
-                                (make-stripe-catalog)
-                                *stripe-tier-plans*))))))
+        (set-stripe-catalog!
+         (ensure-billing-portal-configuration
+          (fold:fold-left (lambda (catalog plan)
+                             (destructuring-bind (tier product-name unit-amount) plan
+                               (ensure-tier-product catalog tier product-name unit-amount)))
+                           (make-stripe-catalog)
+                           *stripe-tier-plans*))))))
 
 (defun create-stripe-checkout-session (username tier &optional next)
   "Create a Managed Payments Checkout Session for USERNAME to subscribe to TIER

@@ -20,11 +20,13 @@
 ;;; routed through *GET-USER-TIER* so it can be mocked without a live
 ;;; Postgres connection.
 
-(defparameter *jwt-secret* "[REDACTED_JWT_SECRET]"
+(defparameter *jwt-secret*
+  (or (uiop:getenv "API_JWT_SECRET") "dummy-development-jwt-secret-change-me")
   "HMAC-SHA256 signing secret for API-issued JWTs (see GENERATE-API-JWT).
-This is a placeholder for local development only -- a real deployment
-must rebind this (e.g. from a JWT_SECRET environment variable) before
-issuing any token that will be trusted.")
+Read from the API_JWT_SECRET environment variable at load time, falling
+back to a placeholder string for local development only if unset -- a
+real deployment must set API_JWT_SECRET before issuing any token that
+will be trusted, since the placeholder is public in source control.")
 
 (defparameter *jwt-clock* #'get-universal-time
   "Function of no arguments returning the current time (as a Common Lisp
@@ -32,9 +34,29 @@ universal time), used by GENERATE-API-JWT to compute :IAT/:EXP. Defaults
 to GET-UNIVERSAL-TIME; tests rebind this to a fixed or fast-forwardable
 clock, mirroring PASTEBIN.LISP's *PASTEBIN-CLOCK*.")
 
-(defparameter *api-jwt-lifetime-seconds* 3600
+(defparameter *jwt-algorithm* :hs256
+  "The JOSE signing/verification algorithm used for every API-issued JWT
+(see GENERATE-API-JWT and VERIFY-AND-EXTRACT-JWT in RATE-LIMIT.LISP).
+Centralized here as a single named constant, rather than the literal
+:HS256 keyword being duplicated at both the encode and decode call
+sites, so the two can never silently drift apart. Unlike
+*API-JWT-LIFETIME-SECONDS*, this is intentionally NOT environment-
+overridable: HS256 is a symmetric algorithm and *JWT-SECRET* is already
+the deployer-controlled secret; changing the algorithm independently of
+a code change would require re-keying every issued token's verification
+path anyway, so there is no realistic scenario where an operator needs
+to flip this via configuration alone.")
+
+(defparameter *api-jwt-lifetime-seconds*
+  (let ((env (uiop:getenv "JWT_LIFETIME_SECONDS")))
+    (if (and env (plusp (length env)))
+        (or (parse-integer env :junk-allowed t) 3600)
+        3600))
   "How long (in seconds) a token minted by GENERATE-API-JWT remains valid
-after issuance.")
+after issuance. Overridable via the JWT_LIFETIME_SECONDS environment
+variable (read once at load time) so a deployer can shorten how long a
+leaked token stays valid without a code change; defaults to 3600 (one
+hour) if unset or unparseable.")
 
 (defun unix-time-from-universal-time (universal-time)
   "Convert UNIVERSAL-TIME (as returned by GET-UNIVERSAL-TIME) to Unix time
@@ -54,7 +76,7 @@ after :IAT)."
                        (cons "tier" tier)
                        (cons "iat" now)
                        (cons "exp" (+ now *api-jwt-lifetime-seconds*)))))
-    (jose:encode :hs256 (ironclad:ascii-string-to-byte-array *jwt-secret*) claims)))
+    (jose:encode *jwt-algorithm* (ironclad:ascii-string-to-byte-array *jwt-secret*) claims)))
 
 (defun %get-user-tier (owner-username)
   "Query the users table directly for OWNER-USERNAME's MEMBERSHIP_TIER

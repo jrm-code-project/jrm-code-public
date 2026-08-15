@@ -2,21 +2,15 @@
 
 (in-package :jrm-auth)
 
-(defun get-db-params ()
-  "Return the PostgreSQL connection parameters (DB-NAME USER PASS HOST)
-read from the DB_NAME, DB_USER, DB_PASSWORD, and DB_HOST environment
-variables, each falling back to a local-development default (jrm_db /
-postgres / password / localhost) if unset."
-  (list (or (uiop:getenv "DB_NAME") "jrm_db")
-        (or (uiop:getenv "DB_USER") "postgres")
-        (or (uiop:getenv "DB_PASSWORD") "[REDACTED_DB_PASSWORD]")
-        (or (uiop:getenv "DB_HOST") "localhost")
-        :pooled-p t))
-
-(defvar *db-params* (get-db-params)
-  "PostgreSQL connection parameters (DB-NAME USER PASS HOST), sourced from
-the DB_NAME/DB_USER/DB_PASSWORD/DB_HOST environment variables (see
-GET-DB-PARAMS); falls back to local-development defaults if unset.")
+(defvar *db-params* (list (or (uiop:getenv "DB_NAME") "jrm_db") (or (uiop:getenv "DB_USER") "postgres") (or (uiop:getenv "DB_PASSWORD") "password") (or (uiop:getenv "DB_HOST") "localhost") :pooled-p t)
+  "PostgreSQL connection parameters (DB-NAME USER PASS HOST). DB-NAME is
+read from the DB_NAME environment variable at load time, falling back
+to \"jrm_db\" (the prior hardcoded default) if unset; USER is likewise
+read from DB_USER, falling back to \"postgres\" if unset; PASS is read
+from DB_PASSWORD, falling back to \"password\" if unset; HOST is read
+from DB_HOST, falling back to \"localhost\" if unset -- so every
+connection parameter can be overridden for a real deployment without a
+code change.")
 
 (defmacro with-db (&body body)
   `(postmodern:with-connection *db-params*
@@ -89,7 +83,6 @@ regardless of the case the caller supplied."
                table-name column-name table-name new-column-name
                table-name column-name new-column-name))))
 
-;; -- MOCK DATABASE SCHEMA --
 ;; -- DATABASE SCHEMA (Postgres) --
 (defun init-db ()
   (rename-column-if-exists "users" "email" "username")
