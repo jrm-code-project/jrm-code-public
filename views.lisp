@@ -98,8 +98,6 @@ friendly `?username=' query parameter, or empty for a fresh visit."
                         ~A
                         <label>Username (any unique string):</label><br>
                         <input type='text' name='username' value='~A' required><br>
-                        <label>Password:</label><br>
-                        <input type='password' name='password' required><br>
                         <input type='submit' value='Sign Up'>
                       </form>
                     </body>
@@ -134,10 +132,8 @@ the submitted username."
                              :retry-href "/signup" :retry-label "Try Again"))
 
 (defun render-signup-missing-fields-page ()
-  "The plain error page shown when the signup POST is missing a username
-and/or password entirely."
-  "<html><body><h2>Error</h2><p>Username and password are required.</p></body></html>")
-
+  "The plain error page shown when the signup POST is missing a username entirely."
+  "<html><body><h2>Error</h2><p>Username is required.</p></body></html>")
 ;; --- ADMIN MEMBER-ADMINISTRATION VIEW (see TECHNICAL_DEBT.md item 5) ---
 ;;
 ;; Moved out of ADMIN-MEMBERS-PAGE (admin.lisp) so the handler itself is a
@@ -241,7 +237,7 @@ current page/pager state exactly as ADMIN-PAGINATION captures it."
                "")
            (html-form "/admin/members/create"
                       "<input type='text' name='username' placeholder='username' required>
-                       <input type='password' name='password' placeholder='temporary password' required>
+                       <select name='tier'>
                        <select name='tier'>
                          <option value='CONS'>CONS</option>
                          <option value='CADR'>CADR</option>
@@ -308,29 +304,6 @@ its own <li>."
                  </body>
                </html>" (mapcar #'html-escape codes)))
 
-(defun render-challenge-2fa-page (csrf-token-html)
-  "Pure rendering function for the GET /challenge-2fa page. CSRF-TOKEN-HTML
-is the pre-built hidden CSRF input (from CSRF-INPUT-HTML); there is no other
-caller-supplied data on this page."
-  (format nil "<html>
-                 <head><style>body { font-family: sans-serif; background: #111; color: #eee; padding: 2rem; } input { padding: 0.5rem; margin-bottom: 1rem; }</style></head>
-                 <body><h2>Two-Factor Authentication</h2>
-                   <p>Enter the 6-digit code from your authenticator app, or enter an 8-character recovery code (e.g., ABCD-1234).</p>
-                   <form method='POST'>
-                     ~A
-                     <input type='text' name='totp-code' required autocomplete='off' autofocus><br>
-                     <input type='submit' value='Authenticate'>
-                   </form>
-                 </body>
-               </html>" csrf-token-html))
-
-;; --- ACCOUNT-SETTINGS VIEW RENDERING (see TECHNICAL_DEBT.md items 5/6/8) ---
-;;
-;; Extracted from AUTH.LISP's REGENERATE-RECOVERY-PAGE, REGENERATE-2FA-PAGE,
-;; and CHANGE-PASSWORD-PAGE handlers -- the last remaining handlers that
-;; inlined raw FORMAT NIL HTML alongside session/DB logic (finishing off
-;; items 5/6). Every caller-supplied value routes through HTML-ESCAPE here.
-
 (defun render-regenerate-recovery-page (codes)
   "Pure rendering function for the /regenerate-recovery display: CODES is a
 list of raw recovery-code strings, each escaped before being spliced into
@@ -346,6 +319,13 @@ signup flow) and its return link."
                    <br><a href='/dashboard' style='color: #fff; font-weight: bold;'>Return to Dashboard</a>
                  </body>
                </html>" (mapcar #'html-escape codes)))
+
+;; --- ACCOUNT-SETTINGS VIEW RENDERING (see TECHNICAL_DEBT.md items 5/6/8) ---
+;;
+;; Extracted from AUTH.LISP's REGENERATE-RECOVERY-PAGE, REGENERATE-2FA-PAGE,
+;; and CHANGE-PASSWORD-PAGE handlers -- the last remaining handlers that
+;; inlined raw FORMAT NIL HTML alongside session/DB logic (finishing off
+;; items 5/6). Every caller-supplied value routes through HTML-ESCAPE here.
 
 (defun render-regenerate-2fa-page (qr-url secret csrf-token-html)
   "Pure rendering function for the GET /regenerate-2fa page: QR-URL is the
@@ -367,42 +347,355 @@ CSRF input."
                </html>"
           (html-escape qr-url) (html-escape (string-upcase secret)) csrf-token-html))
 
-(defun render-change-password-page (csrf-token-html &optional message message-class)
-  "Pure rendering function for the /change-password page (both the initial
-GET and every POST outcome, success or error, re-render the same form with
-an optional inline notification banner). MESSAGE, if supplied, is escaped;
-MESSAGE-CLASS is a statically-authored CSS class name (\"error\" or
-\"success\"), not user input."
-  (format nil "<html>
-                 <head><style>
-                   body { font-family: sans-serif; background: #111; color: #eee; padding: 2rem; }
-                   form { max-width: 320px; }
-                   label { display: block; margin-bottom: 0.25rem; }
-                   input { width: 100%; box-sizing: border-box; padding: 0.5rem; margin-bottom: 1rem; border-radius: 4px; border: 1px solid #333; background: #1e1e1e; color: #eee; }
-                   input[type=submit] { width: auto; background: #88c0d0; color: #111; font-weight: bold; border: none; cursor: pointer; }
-                   .notification { padding: 1rem; border-radius: 4px; margin-bottom: 1.5rem; border: 1px solid; }
-                   .notification-error { background: rgba(191, 97, 106, 0.2); border-color: #bf616a; color: #bf616a; }
-                   .notification-success { background: rgba(163, 190, 140, 0.2); border-color: #a3be8c; color: #a3be8c; }
-                 </style></head>
-                 <body>
-                   <h2>Change Password</h2>
-                   ~A
-                   <form method='POST'>
-                     ~A
-                     <label for='current-password'>Current Password</label>
-                     <input type='password' name='current-password' id='current-password' required>
-                     <label for='new-password'>New Password</label>
-                     <input type='password' name='new-password' id='new-password' required minlength='8'>
-                     <label for='confirm-password'>Confirm New Password</label>
-                     <input type='password' name='confirm-password' id='confirm-password' required minlength='8'>
-                     <input type='submit' value='Update Password'>
-                   </form>
-                   <p><a href='/dashboard' style='color: #fff;'>&larr; Return to Dashboard</a></p>
-                 </body>
-               </html>"
-          (if message
-              (format nil "<div class='notification notification-~A'>~A</div>" message-class (html-escape message))
-              "")
-          csrf-token-html))
+(defun render-webauthn-register-page (csrf-token-html)
+  "Pure rendering function for GET /setup-webauthn: displays the button
+that registers a new Passkey and posts it to Lisp. The registration
+logic lives in an external script (js/webauthn-register.js) rather than
+an inline <script> block, because the site's Content-Security-Policy is
+`script-src 'self' ...` with no 'unsafe-inline' -- an inline <script> (or
+an inline onclick='...' handler) is silently blocked by the browser."
+  (html-page 
+   "Setup Passkey"
+   (format nil "<h2>Setup Passkey</h2>
+                <p>Register a hardware key, TouchID, or Windows Hello.</p>
+                <form id='webauthn-form'>
+                  ~A
+                  <button type='button' id='webauthn-register-btn' class='btn'>Register Passkey</button>
+                </form>
+                <div id='webauthn-error' class='notification notification-error' style='display:none;'></div>"
+           csrf-token-html)
+   :extra-head "<script src='/js/webauthn-common.js'></script><script src='/js/webauthn-register.js'></script>"))
+
+(defun render-onboard-link-invalid-page ()
+  "Pure rendering function for the GET /onboard 'Link Expired' error page,
+shown when the bootstrap admin onboarding token is missing, malformed,
+expired, or doesn't match *BOOTSTRAP-ADMIN-EMAIL* (see
+SEND-BOOTSTRAP-ADMIN-ONBOARDING-EMAIL/ONBOARD-PAGE in server.lisp/auth.lisp).
+Contains no interpolated user-controlled data, so nothing needs escaping."
+  (html-page
+   "Link Expired"
+   "<h2>Link Expired</h2>
+    <p>This onboarding link is invalid or has expired. Onboarding links are
+    only valid for a short time after being emailed.</p>
+    <p><a href='/' class='btn'>Return to Login</a></p>"))
+
+;; --- HERESIES ARTICLE CHROME (moved here from heresies.lisp -- see
+;; TECHNICAL_DEBT.md items #5/#6: pure HTML-rendering functions belong
+;; alongside the rest of the escaping-safe view layer, not scattered
+;; across individual feature files) ---
+
+(defun heresy-index-items-html (uri-prefix slugs title-fn)
+  "Build the <li> list shared by both the full and teaser heresies
+indexes: for each slug in SLUGS, a link under URI-PREFIX labeled by
+calling TITLE-FN on the slug (escaped)."
+  (format nil "~{~A~%~}"
+          (mapcar (lambda (slug)
+                    (format nil "<li><a href=\"~A~A.html\">~A</a></li>"
+                            uri-prefix slug (html-escape (funcall title-fn slug))))
+                  slugs)))
+
+(defun render-rdescent-page (jwt-or-nil)
+  "Render the public /rdescent.html page (\"Recursive Descent\"): a
+hidden data div carrying JWT-OR-NIL (the caller's presented JWT,
+HTML-escaped, or an empty string if none was presented) for
+/js/rdescent.js to scrape out of the DOM via its data-jwt attribute,
+a static \"Recursive Descent\" <h2> title (CSS class \"game-title\") atop
+the side panel, plus a message-log div and a playing-field div for the
+game engine to render into. #playing-field is the scrollable outer
+box; it contains #playing-field-inner, a position:relative wrapper
+sized to the grid's own intrinsic content width (via CSS
+width:fit-content) and horizontally centered within #playing-field
+(via margin:0 auto) -- because #playing-field-inner's own top-left
+corner therefore always coincides with the grid's column-0/row-0
+character regardless of how much empty space the centering pushes it
+right by on a given viewport, its two children -- #playing-field-grid
+(the actual grid HTML, replaced wholesale every tick by the grid
+packet) and a sibling #targeting-cursor overlay div -- can both use
+simple, viewport-independent ch/em pixel math to line the cursor up
+with the grid (see /js/rdescent.js's UPDATETARGETINGCURSOR and
+style.css's #targeting-cursor rule). #targeting-cursor is kept as a
+SIBLING rather than a child of #playing-field-grid specifically
+because #playing-field-grid's innerHTML is fully replaced every tick,
+which would otherwise destroy a cursor element living inside it.
+#playing-field-grid and #targeting-cursor are deliberately written on
+a single source line with no whitespace between their tags: since
+#playing-field-grid's own CSS is WHITE-SPACE:PRE (needed to render the
+grid packet's row-separating newlines verbatim), any literal
+newline/indentation between these two divs in this format string
+would itself be preserved as a real blank line if it were inherited
+onto -- or otherwise present as a text node within -- a WHITE-SPACE:PRE
+ancestor, pushing the rendered grid down and desyncing it from
+#targeting-cursor's fixed-offset math. Also
+rendered: a hidden #message-log-modal overlay
+(toggled by the 'v' key -- see /js/rdescent.js) that displays the
+last 50 message-log entries in a scrollable box, a hidden
+#inventory-modal overlay (toggled by the 'i' key) listing the
+player's current inventory items for selection before entering
+targeting mode, a hidden #equipment-modal overlay (toggled by the 'u'
+key) listing the player's four equipment slots and their occupants for
+selection before sending an \"unequip\" command (see /js/rdescent.js's
+RENDEREQUIPMENTMODAL), a hidden #plaque-modal overlay (server-triggered
+by a one-shot \"plaque\" packet -- see RDESCENT-OUTBOUND-PACKETS/
+TICK-ALL-CLIENTS, RDESCENT/SERVER.LISP, and /js/rdescent.js's
+SHOWPLAQUEMODAL -- when a player reads a final-level Commemorative
+Plaque, dismissed by Escape) displaying that plaque's own congratulatory
+text, and a hidden #legend-modal overlay (toggled by the
+'?' key, dismissed by Escape) with static markup documenting every
+keybinding -- unlike the other two modals, its content never changes
+at runtime, so it needs no JS-populated body element, just a plain
+[hidden]-attribute toggle (see /js/rdescent.js's TOGGLELEGENDMODAL).
+The side panel's PLAYER-STATS div contains
+static, persistent child nodes -- #stats-depth (Level: X/Y text),
+#stats-room (just the room-kind name, e.g. \"Cubicle Farm\" --
+centered via CSS, unlike its label-prefixed siblings -- directly below
+#stats-depth --
+see ROOM-KIND-DISPLAY-NAME, rdescent/dungeon.lisp, and
+RDESCENT-PLAYER-STATS-PACKET's \"room-html\" field, rdescent/server.lisp),
+a .health-bar-container with permanent #stats-hp-bar/#stats-dmg-bar
+spans and a #stats-hp-text overlay, #stats-xp, #stats-rsu (RDESCENT's
+gold/loot currency, displayed directly after XP -- see
+FORMAT-RSU-FOR-HTML in rdescent/entities.lisp for why its padding is one
+character narrower than XP's own), #stats-kombucha, a static
+#player-corporate-stats grid of seven .stat-row divs (Bandwidth/Pivot/
+Caffeine Tol/Domain Know/Seniority/Synergy/Hygiene -- ENTITY's seven
+flavor-only \"Corporate RPG Stats\", each rolled once via ROLL-STAT --
+see rdescent/mechanics.lisp), each a flex row pairing a static label span
+with a #val-... span (e.g. #val-bandwidth) -- so that /js/rdescent.js's
+tick handler (see APPLYSERVERPACKET's 'player-stats
+case) can update their CSS width/textContent in place every tick
+rather than destroying and recreating them via innerHTML: only
+mutating existing DOM nodes' style.width lets the CSS transition on
+.health-bar-hp/.health-bar-dmg actually animate, and never emitting
+literal whitespace/<br> around the bar avoids the stray blank line a
+naive innerHTML replacement produced, and finally #stats-equipment (a
+plain textContent list of currently-equipped item names by slot,
+rebuilt each tick from RDESCENT-PLAYER-STATS-PACKET's \"equipment\"
+field -- see /js/rdescent.js's APPLYSERVERPACKET 'player-stats case),
+placed below the Corporate RPG Stats grid so equipped gear reads as
+its own section beneath the core stat block. Uses the site's standard
+stylesheet (/css/style.css) and loads /js/rdescent.js. Pure:
+JWT-OR-NIL is simply escaped and spliced in -- no validation is
+performed here, since /rdescent.html is public and does not require a
+JWT to load."
+  (format nil "<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"UTF-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+  <title>Recursive Descent</title>
+  <link rel=\"stylesheet\" href=\"/css/style.css?v=12\">
+</head>
+<body>
+  <div id=\"rdescent-data\" data-jwt=\"~A\" hidden style=\"display:none;position:absolute;width:0;height:0;overflow:hidden;margin:0;padding:0;\"></div>
+  <div id=\"rdescent-game\" tabindex=\"0\">
+    <div id=\"game-container\">
+      <div id=\"top-row\">
+        <div id=\"side-panel\">
+          <h2 class=\"game-title\">Recursive Descent</h2>
+          <div id=\"player-stats\">
+            <div id=\"stats-depth\"></div>
+            <div id=\"stats-room\"></div>
+            <div class=\"health-bar-container\">
+              <span id=\"stats-hp-bar\" class=\"health-bar-hp\"></span><span id=\"stats-dmg-bar\" class=\"health-bar-dmg\"></span><span id=\"stats-hp-text\" class=\"health-bar-text\"></span>
+            </div>
+            <div id=\"stats-xp\"></div>
+            <div id=\"stats-rsu\"></div>
+            <div id=\"stats-kombucha\"></div>
+            <div id=\"player-corporate-stats\">
+              <div class=\"stat-row\"><span>Bandwidth:</span> <span id=\"val-bandwidth\"></span></div>
+              <div class=\"stat-row\"><span>Pivot:</span> <span id=\"val-pivot\"></span></div>
+              <div class=\"stat-row\"><span>Caffeine Tol:</span> <span id=\"val-caffeine-tolerance\"></span></div>
+              <div class=\"stat-row\"><span>Domain Know:</span> <span id=\"val-domain-knowledge\"></span></div>
+              <div class=\"stat-row\"><span>Seniority:</span> <span id=\"val-seniority\"></span></div>
+              <div class=\"stat-row\"><span>Synergy:</span> <span id=\"val-synergy\"></span></div>
+              <div class=\"stat-row\"><span>Hygiene:</span> <span id=\"val-hygiene\"></span></div>
+            </div>
+            <div id=\"stats-equipment\"></div>
+          </div>
+        </div>
+        <div id=\"playing-field\">
+          <div id=\"playing-field-inner\"><div id=\"playing-field-grid\"></div><div id=\"targeting-cursor\" hidden></div></div>
+        </div>
+      </div>
+      <div id=\"message-log\"></div>
+    </div>
+  </div>
+  <div id=\"message-log-modal\" hidden>
+    <div id=\"message-log-modal-content\">
+      <h3>Message History</h3>
+      <div id=\"message-log-modal-body\" tabindex=\"0\"></div>
+    </div>
+  </div>
+  <div id=\"inventory-modal\" hidden>
+    <div id=\"inventory-modal-content\">
+      <h3>Inventory</h3>
+      <div id=\"inventory-modal-body\" tabindex=\"0\"></div>
+    </div>
+  </div>
+  <div id=\"equipment-modal\" hidden>
+    <div id=\"equipment-modal-content\">
+      <h3>Equipment</h3>
+      <div id=\"equipment-modal-body\" tabindex=\"0\"></div>
+    </div>
+  </div>
+  <div id=\"plaque-modal\" hidden>
+    <div id=\"plaque-modal-content\">
+      <h3>Commemorative Plaque</h3>
+      <div id=\"plaque-modal-body\" tabindex=\"0\"></div>
+    </div>
+  </div>
+  <div id=\"legend-modal\" hidden>
+    <div id=\"legend-modal-content\">
+      <h3>Controls</h3>
+      <div id=\"legend-modal-body\" tabindex=\"0\">
+        <div class=\"legend-row\"><span class=\"legend-key\">Arrow Keys</span><span class=\"legend-desc\">Move / attack an adjacent enemy</span></div>
+        <div class=\"legend-row\"><span class=\"legend-key\">g</span><span class=\"legend-desc\">Grab whatever item is on the floor underfoot</span></div>
+        <div class=\"legend-row\"><span class=\"legend-key\">t</span><span class=\"legend-desc\">Interact with a shrine, vendor, or other fixture underfoot</span></div>
+        <div class=\"legend-row\"><span class=\"legend-key\">s</span><span class=\"legend-desc\">Save game state to browser</span></div>
+        <div class=\"legend-row\"><span class=\"legend-key\">i</span><span class=\"legend-desc\">Open inventory</span></div>
+        <div class=\"legend-row\"><span class=\"legend-key\">Arrow Keys, Enter</span><span class=\"legend-desc\">(in Inventory) Select an item to use, then aim and confirm</span></div>
+        <div class=\"legend-row\"><span class=\"legend-key\">e</span><span class=\"legend-desc\">(in Inventory) Equip the selected item, if equippable</span></div>
+        <div class=\"legend-row\"><span class=\"legend-key\">d</span><span class=\"legend-desc\">(in Inventory) Drop the selected item</span></div>
+        <div class=\"legend-row\"><span class=\"legend-key\">u</span><span class=\"legend-desc\">Open equipment / unequip an item (cursed items can't be unequipped)</span></div>
+        <div class=\"legend-row\"><span class=\"legend-key\">k</span><span class=\"legend-desc\">Drink a Kombucha to heal</span></div>
+        <div class=\"legend-row\"><span class=\"legend-key\">&lt; / &gt;</span><span class=\"legend-desc\">Use stairs up / down</span></div>
+        <div class=\"legend-row\"><span class=\"legend-key\">v</span><span class=\"legend-desc\">Toggle message history</span></div>
+        <div class=\"legend-row\"><span class=\"legend-key\">?</span><span class=\"legend-desc\">Toggle this legend</span></div>
+        <div class=\"legend-row\"><span class=\"legend-key\">Escape</span><span class=\"legend-desc\">Cancel targeting / close inventory / close this legend</span></div>
+      </div>
+    </div>
+  </div>
+  <script src=\"/js/rdescent.js\"></script>
+</body>
+</html>"
+          (html-escape (or jwt-or-nil ""))))
+
+(defun render-heresy-page (title body-html)
+  "Wrap BODY-HTML (trusted markup, an essay's body fragment already read
+from disk) in the site's article chrome for a full, paywalled essay
+page."
+  (format nil "<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"UTF-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+  <title>~A - JRM Code Project Heresies</title>
+  <link rel=\"stylesheet\" href=\"/css/article.css\">
+</head>
+<body>
+  <article>
+    <header>
+      <h1>~A</h1>
+      <p class=\"byline\">Heresies &mdash; JRM Code Project</p>
+    </header>
+    ~A
+    <footer>
+      <a href=\"/heresies/index.html\">&larr; All Heresies</a>
+      <a href=\"/dashboard\">Dashboard</a>
+    </footer>
+  </article>
+</body>
+</html>"
+          (html-escape title) (html-escape title) body-html))
+
+(defun render-heresy-teaser-page (next-url title teaser-body-html)
+  "Wrap TEASER-BODY-HTML (the first paragraph(s) of the essay named by
+TITLE) in the site's article chrome for a public teaser page, ending in
+a call-to-action linking to NEXT-URL (already a fully-formed,
+URL-encoded \"/?next=...\" redirect back to the full, protected essay --
+built by the caller, since it depends on the essay's slug, which this
+combinator doesn't otherwise need)."
+  (format nil "<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"UTF-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+  <title>~A (Preview) - JRM Code Project Heresies</title>
+  <link rel=\"stylesheet\" href=\"/css/article.css\">
+</head>
+<body>
+  <article>
+    <header>
+      <h1>~A</h1>
+      <p class=\"byline\">Heresies &mdash; JRM Code Project (Preview)</p>
+    </header>
+    ~A
+    <div class=\"paywall-banner\">
+      <h3>Read the Full Heresy</h3>
+      <p><em>This is a preview. Sign in &mdash; it's free &mdash; to keep reading.</em></p>
+      <p><a href=\"~A\" class=\"button\">Sign In to Read the Full Essay &rarr;</a></p>
+    </div>
+    <footer>
+      <a href=\"/heresies-teasers/index.html\">&larr; All Heresies</a>
+    </footer>
+  </article>
+</body>
+</html>"
+          (html-escape title)
+          (html-escape title)
+          teaser-body-html
+          next-url))
+
+(defun render-heresies-index (index-items-html)
+  "The paywalled /heresies/index.html page: lists every essay (already
+rendered as <li> markup by INDEX-ITEMS-HTML, see HERESY-INDEX-ITEMS-HTML),
+linking to its full, protected page."
+  (format nil "<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"UTF-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+  <title>JRM Code Project - Heresies</title>
+  <link rel=\"stylesheet\" href=\"/css/article.css\">
+</head>
+<body>
+  <article>
+    <header>
+      <h1>Heresies</h1>
+      <p class=\"byline\">Short, opinionated essays on Lisp and software design.</p>
+    </header>
+    <ul>
+      ~A
+    </ul>
+    <footer>
+      <a href=\"/dashboard\">&larr; Dashboard</a>
+    </footer>
+  </article>
+</body>
+</html>"
+          index-items-html))
+
+(defun render-heresies-teasers-index (index-items-html)
+  "The public /heresies-teasers/index.html page: lists every essay
+(already rendered as <li> markup by INDEX-ITEMS-HTML, see
+HERESY-INDEX-ITEMS-HTML), linking to its public teaser page, with a
+further link on to the (paywalled) full index."
+  (format nil "<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"UTF-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+  <title>JRM Code Project - Heresies (Previews)</title>
+  <link rel=\"stylesheet\" href=\"/css/article.css\">
+</head>
+<body>
+  <article>
+    <header>
+      <h1>Heresies (Preview)</h1>
+      <p class=\"byline\">Short, opinionated essays on Lisp and software design.</p>
+    </header>
+    <ul>
+      ~A
+    </ul>
+    <footer>
+      <a href=\"/heresies/index.html\">Read the full heresies &rarr; (membership required)</a>
+    </footer>
+  </article>
+</body>
+</html>"
+          index-items-html))
+
+
+
 
 
